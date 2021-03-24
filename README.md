@@ -33,6 +33,9 @@ The directory structure is as follows:
         - Assuming a max resolution of 1.0, can solve for the actual resolution using `1.0 / (2 ^ resolution)`.
     - Origin: Defines the position of the lower bound corner of a prism in sampling space.
     - Shape: Defines dimensions of prism in size of tiles.
+    - A prism can be defined as **empty** which means that it is not used as a compute tile or scored in the solution
+        - These prisms are useful for ignoring empty space in a heatmap (i.e. zero target resolution) that do not need to be modeled
+        - These prisms can only enclose volumes that have zero target resolution on the heatmap
 - Tile ID: ID of a tile, based off of the ordering of prisms in the solution and the size of each prism. See the source code for how it is computed.
 
 ## Building the Executable
@@ -90,6 +93,9 @@ $ ./test.sh <validator> <feedback_dir> <suite> [test_case [additional_args]]
     - `box_small_solved`: Small 2D box with valid solution (adapters included)
 - `circle`: Models a 2D circle
     - `circle`: 2D circle with no adapters
+- `empty`: Solutions using empty prisms in model
+    - `empty_small`: Models a zero target resolution heatmap with empty prisms
+    - `empty_err`: Incorrectly models a non-zero target resolution heatmap with empty prisms
 - `flat`: Models a uniform space
     - `flat_big`: Large 3D uniform space
     - `flat_small`: Small 2D uniform space solved with several prisms
@@ -97,6 +103,8 @@ $ ./test.sh <validator> <feedback_dir> <suite> [test_case [additional_args]]
 - `gradient`: Models a linear gradient
     - `gradient_big`: Large 2D linear gradient 
     - `gradient_small`: Small 2D linear gradient
+- `hollow_sphere`: Models a hollow sphere
+    - `hollow_sphere-100`: Hollow sphere with dimensions 100x100x100
 - `mix`: Set of tests modeling a small 2D linear gradient with different solutions
     - `flat_gradient`: Flat solution to problem
     - `gradient_gradient`: Gradient solution to problem
@@ -109,6 +117,9 @@ $ ./test.sh <validator> <feedback_dir> <suite> [test_case [additional_args]]
     - `simple_3d`: Simple 3D test
 - `sphere`: Models a 3D sphere
     - `sphere`: 3D sphere with no adapters
+- `torus`: Models a 3D torus
+    - `torus-200`: A torus with dimensions 400x400x200
+        - This test is compressed and needs unzipped before use
 ## File Formats
 There are two file formats which are important. Problem definitions use the `schema.in` format. Problem solutions us the `schema.out` format. Both allow for commenting out lines using a
 `#` at the beginning of the line being commented out.
@@ -127,6 +138,7 @@ The following definition assumes no commented lines.
         - For 2D this is `(vol_length + 1) * (vol_width + 1)`
         - For 3D this is `(vol_length + 1) * (vol_width + 1) + (vol_height + 1)`
     - Heatmap is filled in by x then y then z
+    - The max value across the entire heatmap must be 1.0
 ### Problem Solution
 The following definition assumes no commented lines
 - Line 1: Inverse sampling step (positive integer)
@@ -134,6 +146,8 @@ The following definition assumes no commented lines
     - For example, given a 2x2x2 volume and an inverse sampling step of 2. This means that in the sampling space, the sampling points take up a 4x4x4 volume where each unit is equivalent to 0.5 units of the problem volume.
 - Line 2 to X - 1: Each line defines a prism
     - Each line starts with a non-negative integer representing the resolution in the inverse logarithmic scale
+        - If this resolution is -1, then the prism is considered empty
+            - Empty prisms have a assumed resolution value of 0
     - For 2D points it is followed by two non-negative integers for the origin of the prism and two
     positive integers for the shape of the prism in tiles
     - For 3D points it is followed by three non-negative integers for the origin of the prism and three positive integers for the shape of the prism in tiles
@@ -148,6 +162,7 @@ The following definition assumes no commented lines
     - The adapter map is used to map tiles used for adapters in the solution to placements on the fabric
 - Line Y + 1 to EOF: The following lines define entries of the adpater map
     - Each line is two positive integers representing a position on the fabric
+    - The same adapter is used for all tiles that are adjacent to the same face
     - The index of the tile map corresponds to the index of the adapter list created when validating adapters, (see [above](###Finding-Adapters))
 
 ## Visualizations

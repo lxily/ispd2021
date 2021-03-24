@@ -1,7 +1,7 @@
 #include "util.h"
 #include "ispd_validate.h"
 
-#define DOUBLE_EPSILON 0.000000001 // Epsilon value for approximate double equality
+#define DOUBLE_EPSILON 0.000001 // Epsilon value for approximate double equality
 
 #define WIRE_POW 1.5 // Power to which each wire score is raised (L1.5 Norm)
 
@@ -81,11 +81,11 @@ void print_problem(struct problem *prob)
     int heatmap_num = 0;
     if (dimension == 2)
     {
-        heatmap_num = prob->volume_shape[0] * prob->volume_shape[1];
+        heatmap_num = (prob->volume_shape[0] + 1) * (prob->volume_shape[1] + 1);
     }
     else
     {
-        heatmap_num = prob->volume_shape[0] * prob->volume_shape[1] * prob->volume_shape[2];
+        heatmap_num = (prob->volume_shape[0] + 1) * (prob->volume_shape[1] + 1) * (prob->volume_shape[2] + 1);
     }
     for (int i = 0; i < heatmap_num; i += 1)
     {
@@ -131,7 +131,8 @@ void print_prism(struct prism *p, int tabs, bool print_range)
         printf("Range:");
         for (int j = 0; j < dimension; j += 1)
         {
-            printf(" %c: [%d,%d]", j == 0 ? 'x' : j == 1 ? 'y' : 'z',
+            printf(" %c: [%d,%d]", j == 0 ? 'x' : j == 1 ? 'y'
+                                                         : 'z',
                    p->origin[j],
                    get_close(p, j));
         }
@@ -274,7 +275,8 @@ void print_bounds(const node_bounds *bounds, int tabs)
     printf("Bounds:");
     for (int j = 0; j < dimension; j += 1)
     {
-        printf(" %c: [%d,%d]", j == 0 ? 'x' : j == 1 ? 'y' : 'z',
+        printf(" %c: [%d,%d]", j == 0 ? 'x' : j == 1 ? 'y'
+                                                     : 'z',
                bounds->low_bounds[j],
                bounds->up_bounds[j]);
     }
@@ -614,6 +616,11 @@ tile_tree *build_tile_tree(tile ***tiles, struct prism *prisms, int nprims, int 
     {
         int prev_prism_tiles = ntiles;
         struct prism *prism = &prisms[i];
+
+        if (prism->is_empty)
+        {
+            continue;
+        }
         if (dimension == 2)
         {
             for (int x = 0; x < prism->shape[0]; x += 1)
@@ -644,28 +651,29 @@ tile_tree *build_tile_tree(tile ***tiles, struct prism *prisms, int nprims, int 
             }
         }
     }
-
-    // Sort tiles spatially for building tree
-    qsort(added_tiles, ntiles, sizeof(tile *), cmp_tiles);
-
-    // Create lowest level interior nodes
-    tile_node **interior_nodes = insert_tile(tree, added_tiles, ntiles);
-
-    // Build rest of interior nodes
-    for (; v_count(interior_nodes) > 1;)
+    if (v_count(added_tiles) > 0)
     {
-        tile_node **new_level = insert_tile_node(tree, interior_nodes, v_count(interior_nodes));
+        // Sort tiles spatially for building tree
+        qsort(added_tiles, ntiles, sizeof(tile *), cmp_tiles);
+
+        // Create lowest level interior nodes
+        tile_node **interior_nodes = insert_tile(tree, added_tiles, ntiles);
+
+        // Build rest of interior nodes
+        for (; v_count(interior_nodes) > 1;)
+        {
+            tile_node **new_level = insert_tile_node(tree, interior_nodes, v_count(interior_nodes));
+            v_free(interior_nodes);
+            interior_nodes = new_level;
+        }
+
+        tree->head = interior_nodes[0];
+
         v_free(interior_nodes);
-        interior_nodes = new_level;
+
+        // Sort tiles by id for later lookup
+        qsort(added_tiles, ntiles, sizeof(tile *), cmp_tiles_id);
     }
-
-    tree->head = interior_nodes[0];
-
-    v_free(interior_nodes);
-
-    // Sort tiles by id for later lookup
-    qsort(added_tiles, ntiles, sizeof(tile *), cmp_tiles_id);
-
     // Return added tiles in tiles pointer
     *tiles = added_tiles;
     return tree;
@@ -726,10 +734,10 @@ void build_connectivity()
     all_connections = calloc(1, sizeof(struct connectivity));
 
     int ntiles = v_count(tile_list);
-
     for (int i = 0; i < ntiles; i += 1)
     {
         tile *t = tile_list[i];
+
         int curr_tid = get_tile_id(t);
         int has_res_diff = 0;
         v_adjoin(all_connections->current_tile, curr_tid);
@@ -814,7 +822,7 @@ void build_connectivity()
                 }
             }
 
-            if (t->bounds.low_bounds[j] < volume_bounds.up_bounds[j])
+            if (t->bounds.up_bounds[j] < volume_bounds.up_bounds[j])
             {
                 node_bounds adjacent_range;
                 for (int k = 0; k < dimension; k += 1)
@@ -1015,6 +1023,10 @@ void validate_pe_fit()
     int expected_compute = 0;
     for (int i = 0; i < sol->nprims; i += 1)
     {
+        if (sol->prism[i].is_empty)
+        {
+            continue;
+        }
         int curr_pes = 1;
         for (int j = 0; j < dimension; j += 1)
         {
@@ -1139,17 +1151,17 @@ void validate_prism_overlap()
 void validate_coverage()
 {
     // Assuming no overlap can just check if prism volume = sample space volume
-    int expected_volume = 1;
+    unsigned long long int expected_volume = 1;
     for (int i = 0; i < dimension; i += 1)
     {
         expected_volume *= prob->volume_shape[i] * sol->inv_sampling_step;
     }
 
-    int real_volume = 0;
+    unsigned long long int real_volume = 0;
 
     for (int i = 0; i < sol->nprims; i += 1)
     {
-        int prism_volume = 1;
+        unsigned long long int prism_volume = 1;
         for (int j = 0; j < dimension; j += 1)
         {
             prism_volume *= (get_close(&(sol->prism[i]), j) -
@@ -1158,7 +1170,7 @@ void validate_coverage()
         real_volume += prism_volume;
     }
 
-    fatalif(real_volume != expected_volume, "Coverage failed, expected: %d, real %d", expected_volume, real_volume);
+    fatalif(real_volume != expected_volume, "Coverage failed, expected: %llu, real %llu", expected_volume, real_volume);
 }
 
 int validate_adapters()
@@ -1180,37 +1192,46 @@ int validate_adapters()
 
     neighbour *adapter_list = get_adjacent_list(need_adapters);
 
-    if (v_count(adapter_list) != nadaptor)
+    int adapter_count = v_count(adapter_list);
+
+    if (adapter_count != nadaptor)
     {
         printf("Invalid number of adapters, see below for required connections:\n");
         print_connectivity(need_adapters, 1);
         success = 0;
     }
+    if (success)
+    {
+        // Check that faces all use the same adapter
+        int curr_face = -1;
+        int curr_tile = -1;
+        int curr_adapter_x = -1;
+        int curr_adapter_y = -1;
+        for (int i = 0; i < adapter_count; i += 1)
+        {
+            if (curr_tile != adapter_list[i].curr_tile)
+            {
+                curr_tile = adapter_list[i].curr_tile;
+                curr_face = adapter_list[i].face;
+                curr_adapter_x = sol->adapter_map[i].x;
+                curr_adapter_y = sol->adapter_map[i].y;
+            }
+            else if (curr_face != adapter_list[i].face)
+            {
+                curr_face = adapter_list[i].face;
+                curr_adapter_x = sol->adapter_map[i].x;
+                curr_adapter_y = sol->adapter_map[i].y;
+            }
+
+            fatalif(curr_adapter_x != sol->adapter_map[i].x || curr_adapter_y != sol->adapter_map[i].y,
+                    "Adjacent tile %d on face %d of tile %d does not use the same adapter (%d, %d) vs (%d, %d)",
+                    adapter_list[i].adjacent_tile, curr_face, curr_tile, curr_adapter_x, curr_adapter_y, sol->adapter_map[i].x, sol->adapter_map[i].y);
+        }
+    }
 
     v_free(adapter_list);
 
     return success;
-}
-
-/* feasibility check:
- * nonoverlap 
- * full coverage 
- * required adapters are 1:2 or 2:1 only */
-int validate()
-{
-    validate_prism_overlap();
-    printf("[OK] - Overlap Validated\n");
-    validate_coverage();
-    printf("[OK] - Coverage Validated\n");
-    int adapters_good = validate_adapters();
-    if (adapters_good)
-    {
-        printf("[OK] - Connectivity Validated\n");
-        validate_pe_fit();
-        printf("[OK] - PE Fit Validated\n");
-    }
-
-    return adapters_good;
 }
 
 // Get the exact heatmap value in heatmap array at inputted coords (in heatmap space)
@@ -1297,7 +1318,7 @@ double interpolate_heatmap_value(double *scaled_coords)
         double f_221 = x_diff < DOUBLE_EPSILON ? get_heatmap_value(p_221) : (scaled_coords[0] - floored_coords[0]) * get_heatmap_value(p_221);
 
         // Z High
-        double f_112 = y_diff < DOUBLE_EPSILON ? get_heatmap_value(p_112) : (ceil_coords[0] - scaled_coords[0]) * get_heatmap_value(p_112);
+        double f_112 = x_diff < DOUBLE_EPSILON ? get_heatmap_value(p_112) : (ceil_coords[0] - scaled_coords[0]) * get_heatmap_value(p_112);
         double f_212 = x_diff < DOUBLE_EPSILON ? get_heatmap_value(p_212) : (scaled_coords[0] - floored_coords[0]) * get_heatmap_value(p_212);
 
         double f_122 = x_diff < DOUBLE_EPSILON ? get_heatmap_value(p_122) : (ceil_coords[0] - scaled_coords[0]) * get_heatmap_value(p_122);
@@ -1630,7 +1651,7 @@ double find_max_overshoot_z(double x_low, double x_high, double y_low, double y_
 
     double max_overshoot = 0.0;
 
-    for (int i = range_low; i < range_high; i += 1)
+    for (int i = range_low; i <= range_high; i += 1)
     {
         double val = find_max_overshoot_y(x_low, x_high, y_low, y_high, i, sol_val);
 
@@ -1658,18 +1679,18 @@ double find_max_overshoot_z(double x_low, double x_high, double y_low, double y_
     return max_overshoot;
 }
 
-// Convert tile node bounds from sampling space to heatmap space
-node_bounds_d scale_tile_to_heatmap(struct tile *t)
+// Convert node bounds from sampling space to heatmap space
+node_bounds_d scale_bounds_to_heatmap(node_bounds bounds)
 {
     node_bounds_d scaled;
 
     for (int i = 0; i < dimension; i += 1)
     {
-        double low = (double)t->bounds.low_bounds[i] / sol->inv_sampling_step;
+        double low = (double)bounds.low_bounds[i] / sol->inv_sampling_step;
         low = min_d(low, prob->volume_shape[i]);
         low = max_d(low, 0.0);
 
-        double high = ((double)t->bounds.up_bounds[i] + 1.0) / sol->inv_sampling_step;
+        double high = ((double)bounds.up_bounds[i] + 1.0) / sol->inv_sampling_step;
         high = min_d(high, prob->volume_shape[i]);
         high = max_d(high, 0);
 
@@ -1678,6 +1699,12 @@ node_bounds_d scale_tile_to_heatmap(struct tile *t)
     }
 
     return scaled;
+}
+
+// Convert tile node bounds from sampling space to heatmap space
+node_bounds_d scale_tile_to_heatmap(struct tile *t)
+{
+    return scale_bounds_to_heatmap(t->bounds);
 }
 
 // Finds the max overshoot related to a single tile
@@ -1707,18 +1734,17 @@ double find_max_overshoot(struct tile *t)
 double find_max_scale()
 {
     int ntiles = v_count(tile_list);
-    double max_overshoot = 0;
     double max_scale = 1.0;
 
     for (int i = 0; i < ntiles; i += 1)
     {
         double curr_overshoot = find_max_overshoot(tile_list[i]);
-        if (curr_overshoot > max_overshoot)
+        // curr_overshoot = target_res - sol_res => scale = curr_overshoot/sol_res + 1
+        double sol_res = 1.0 / pow(2, tile_list[i]->parent->resolution);
+        double curr_scale = 1.0 + curr_overshoot / sol_res;
+        if (curr_scale > max_scale)
         {
-            // curr_overshoot = target_res - sol_res => scale = curr_overshoot/sol_res + 1
-            double sol_res = 1.0 / pow(2, tile_list[i]->parent->resolution);
-            max_scale = 1.0 + curr_overshoot / sol_res;
-            max_overshoot = curr_overshoot;
+            max_scale = curr_scale;
         }
     }
 
@@ -1811,7 +1837,7 @@ double score_wires()
         int aid = connection_list[i].adjacent_tile;
 
         int curr_res = tile_list[cid]->parent->resolution;
-        int adj_res = tile_list[cid]->parent->resolution;
+        int adj_res = tile_list[aid]->parent->resolution;
 
         if (curr_res == adj_res)
         {
@@ -1829,23 +1855,19 @@ double score_wires()
     // Sum all adapter connections
     connection_list = get_adjacent_list(need_adapters);
     nconnection = v_count(connection_list);
-    int curr_cid = -1;
-    bool curr_added = 0;
+
+    bool *faces_added = calloc(6 * v_count(tile_list), sizeof(bool));
+
     for (int i = 0; i < nconnection; i += 1)
     {
         int cid = connection_list[i].curr_tile;
+        int face = connection_list[i].face;
         int aid = connection_list[i].adjacent_tile;
 
-        // this works since connection list is sorted by tile id
-        if (curr_cid != cid)
+        // Check if current face has been added or not
+        if (faces_added[6 * cid + face] == 0)
         {
-            curr_cid = cid;
-            curr_added = 0;
-        }
-
-        // Add score of current to adapter if not already added
-        if (!curr_added)
-        {
+            // Add score of current to adapter if not already added
             double c_x = sol->compute_map[cid].x - sol->adapter_map[i].x;
             double c_y = sol->compute_map[cid].y - sol->adapter_map[i].y;
 
@@ -1853,7 +1875,7 @@ double score_wires()
             sum_wires += 2 * (abs_d(c_x) + abs_d(c_y));
             sum_1_5_norm += 2 * pow(abs_d(c_x) + abs_d(c_y), WIRE_POW);
 
-            curr_added = 1;
+            faces_added[6 * cid + face] = 1;
         }
 
         // Add score of adapter to adjacent
@@ -1869,7 +1891,66 @@ double score_wires()
         printf("Total Wire Length: %f\n", sum_wires);
     }
 
+    free(faces_added);
+
     return pow(sum_1_5_norm, 1.0 / WIRE_POW);
+}
+
+void validate_empty_prisms()
+{
+    for (int i = 0; i < sol->nprims; i += 1)
+    {
+        struct prism *prism = &sol->prism[i];
+        if (!prism->is_empty)
+        {
+            continue;
+        }
+
+        node_bounds prism_bounds;
+        for (int i = 0; i < dimension; i += 1)
+        {
+            prism_bounds.low_bounds[i] = prism->origin[i];
+            prism_bounds.up_bounds[i] = prism->origin[i] + ((prism->shape[i] * prob->gridpoints_per_tile_edge) << prism->resolution) - 1;
+        }
+
+        if (dimension == 2)
+        {
+            node_bounds_d scaled = scale_bounds_to_heatmap(prism_bounds);
+            double i2 = integrate_y(scaled.low_bounds[0], scaled.up_bounds[0], scaled.low_bounds[1], scaled.up_bounds[1], 0);
+
+            fatalif(abs_d(i2) > DOUBLE_EPSILON, "Prism %d at coord (%d, %d) cannot be empty. It encloses a non-empty target resolution %f", i, (int)scaled.low_bounds[0], (int)scaled.low_bounds[1], i2);
+        }
+        else
+        {
+            node_bounds_d scaled = scale_bounds_to_heatmap(prism_bounds);
+            double i2 = integrate_z(scaled.low_bounds[0], scaled.up_bounds[0], scaled.low_bounds[1], scaled.up_bounds[1], scaled.low_bounds[2], scaled.up_bounds[2]);
+
+            fatalif(abs_d(i2) > DOUBLE_EPSILON, "Prism %d at coord (%d, %d, %d) cannot be empty. It encloses a non-empty target resolution %f", i, (int)scaled.low_bounds[0], (int)scaled.low_bounds[1], (int)scaled.low_bounds[2], i2);
+        }
+    }
+}
+
+/* feasibility check:
+ * nonoverlap 
+ * full coverage 
+ * required adapters are 1:2 or 2:1 only */
+int validate()
+{
+    validate_prism_overlap();
+    printf("[OK] - Overlap Validated\n");
+    validate_coverage();
+    printf("[OK] - Coverage Validated\n");
+    int adapters_good = validate_adapters();
+    if (adapters_good)
+    {
+        printf("[OK] - Connectivity Validated\n");
+        validate_pe_fit();
+        printf("[OK] - PE Fit Validated\n");
+        validate_empty_prisms();
+        printf("[OK] - Empty Prisms Validated\n");
+    }
+
+    return adapters_good;
 }
 
 // Compute the score of a solution
@@ -1879,30 +1960,28 @@ double score_solution()
     double wires = score_wires();
 
     int max_tiles = prob->fabric_shape[0] * prob->fabric_shape[1];
-    int num_tiles = ncompute + nadaptor;
 
-    double max_accuracy = max_tiles; // TODO figure out this metric
+    double max_accuracy = max_tiles; 
 
-    double max_wires_tot = pow(4 * max_tiles, 1.0 / WIRE_POW);
-    double max_wires_curr = pow(4 * num_tiles, 1.0 / WIRE_POW);
-
-    if (dimension == 3)
-    {
-        max_wires_tot = pow(4 * max_tiles + 2 * pow(pow(max_tiles, 1.0 / 3.0), WIRE_POW), 1.0 / WIRE_POW);
-        max_wires_curr = pow(4 * num_tiles + 2 * pow(pow(num_tiles, 1.0 / 3.0), WIRE_POW), 1.0 / WIRE_POW);
-    }
     double accuracy_norm = accuracy / max_accuracy;
-    double wires_norm = min_d(max_wires_tot / wires, max_wires_curr / wires);
+
+    double wires_norm = 1.0;
+    if (wires > 0.0001) {
+        wires_norm = pow(100 * max_tiles, 1.0 / WIRE_POW) / wires;
+    } 
+
+    double final_score = min_d(accuracy_norm, wires_norm);
 
     if (opt.flags & SCORE)
     {
         printf("Pure Accuracy: %f / %f\n", accuracy, max_accuracy);
-        printf("Pure Connectivity: %f / (%f or %f)\n", wires, max_wires_tot, max_wires_curr);
+        printf("Pure Connectivity: %f \n", wires);
         printf("Normalized Accuracy: %f\n", accuracy_norm);
         printf("Normalized Connectivity: %f\n", wires_norm);
+        printf("Final Score: %f\n", final_score);
     }
 
-    return prob->cost.alpha * accuracy_norm + prob->cost.beta * wires_norm;
+    return final_score;
 }
 
 int main(int argc, char **argv)
@@ -2100,7 +2179,19 @@ int main(int argc, char **argv)
             fatalif(res != 7, "%s: Invalid paramters for prism, need 7 integers", line);
         }
 
-        fatalif(p.resolution < 0, "%s: Invalid resolution, should be non negative integer", line);
+        fatalif(p.resolution < 0 && p.resolution != -1, "%s: Invalid resolution, should be non negative integer or -1 for empty prisms", line);
+
+        if (p.resolution == -1)
+        {
+            // Use finest resolution to define prisms
+            p.resolution = 0;
+            p.is_empty = 1;
+        }
+        else
+        {
+            p.is_empty = 0;
+        }
+
         for (int i = 0; i < dimension; i += 1)
         {
             fatalif(p.origin[i] < volume_bounds.low_bounds[i] ||
